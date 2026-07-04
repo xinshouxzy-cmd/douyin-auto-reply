@@ -1,4 +1,4 @@
-name: Build Windows Package
+name: Build Self-contained Package
 
 on:
   push:
@@ -17,25 +17,30 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install deps
+      - name: Install deps + Playwright browser
         run: |
-          pip install pyinstaller selenium webdriver-manager
+          pip install pyinstaller playwright
+          python -m playwright install chromium
 
-      - name: Get chromedriver
+      - name: Build EXE
         run: |
-          python -c "from webdriver_manager.chrome import ChromeDriverManager; p = ChromeDriverManager().install(); print('DRIVER at:', p); import shutil; shutil.copy(p, 'chromedriver.exe')"
+          pyinstaller --onedir --windowed --name "抖音自动回复" --add-data "config.json;." --collect-all playwright auto_reply_gui.py
 
-      - name: Build
+      - name: Copy Playwright browser into dist
         run: |
-          pyinstaller --onedir --windowed --name "抖音自动回复" --add-data "config.json;." --add-data "chromedriver.exe;." --collect-all selenium --hidden-import selenium.webdriver.chrome.webdriver --hidden-import webdriver_manager --hidden-import winreg auto_reply_gui.py
+          $pwCache = "$env:USERPROFILE\AppData\Local\ms-playwright"
+          if (Test-Path $pwCache) {
+            Copy-Item -Path $pwCache -Destination "dist\抖音自动回复\ms-playwright" -Recurse
+          } else {
+            Write-Error "Playwright browsers not found"
+          }
 
       - name: Package
-        shell: pwsh
         run: |
-          Compress-Archive -Path "dist\抖音自动回复\*" -DestinationPath "抖音自动回复_v6.zip"
+          Compress-Archive -Path "dist\抖音自动回复\*" -DestinationPath "抖音自动回复_完整包.zip"
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: 抖音自动回复_v6
-          path: 抖音自动回复_v6.zip
+          name: 抖音自动回复_完整包
+          path: 抖音自动回复_完整包.zip
