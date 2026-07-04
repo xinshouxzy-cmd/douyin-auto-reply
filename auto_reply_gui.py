@@ -48,14 +48,38 @@ def save_config(config):
 # ====== Chrome ======
 
 def find_chrome():
+    # 方法1：检查常见路径
     for p in [
         "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
         "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
         os.path.expandvars("%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"),
         os.path.expandvars("%PROGRAMFILES%\\Google\\Chrome\\Application\\chrome.exe"),
         os.path.expandvars("%PROGRAMFILES(X86)%\\Google\\Chrome\\Application\\chrome.exe"),
+        os.path.expandvars("%USERPROFILE%\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe"),
     ]:
+        p = os.path.normpath(p)
         if os.path.exists(p): return p
+
+    # 方法2：Windows注册表查询
+    if sys.platform == "win32":
+        try:
+            import winreg
+            for root in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
+                for subkey in [
+                    r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
+                    r"SOFTWARE\Google\Chrome",
+                ]:
+                    try:
+                        with winreg.OpenKey(root, subkey) as key:
+                            val, _ = winreg.QueryValueEx(key, "")
+                            if val and os.path.exists(val): return val
+                        with winreg.OpenKey(root, subkey) as key:
+                            val, _ = winreg.QueryValueEx(key, "InstallLocation")
+                            p = os.path.join(val, "chrome.exe")
+                            if os.path.exists(p): return p
+                    except: pass
+        except: pass
+
     return None
 
 def get_driver_path():

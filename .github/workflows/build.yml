@@ -27,7 +27,7 @@ jobs:
 
       - name: Build
         run: |
-          pyinstaller --onedir --windowed --name "抖音自动回复" --add-data "config.json;." --add-data "chromedriver.exe;." --collect-all selenium --hidden-import selenium.webdriver.chrome.webdriver --hidden-import webdriver_manager auto_reply_gui.py
+          pyinstaller --onedir --windowed --name "抖音自动回复" --add-data "config.json;." --add-data "chromedriver.exe;." --collect-all selenium --hidden-import selenium.webdriver.chrome.webdriver --hidden-import webdriver_manager --hidden-import winreg auto_reply_gui.py
 
       - name: Package
         shell: pwsh
