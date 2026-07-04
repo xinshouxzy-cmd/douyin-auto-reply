@@ -17,35 +17,28 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
+      - name: Install Chrome
         run: |
-          pip install pyinstaller selenium
+          choco install googlechrome -y
 
-      - name: Download chromedriver
+      - name: Install Python deps
         run: |
-          $chromeVersion = (Get-Item "C:\Program Files\Google\Chrome\Application\chrome.exe").VersionInfo.ProductVersion
-          Write-Host "Chrome version: $chromeVersion"
-          $majorVersion = $chromeVersion.Split('.')[0]
-          $url = "https://storage.googleapis.com/chrome-for-testing-public/$($majorVersion).0.0/win64/chromedriver-win64.zip"
-          Invoke-WebRequest -Uri $url -OutFile chromedriver.zip
-          Expand-Archive chromedriver.zip -DestinationPath .
-          move "chromedriver-win64\chromedriver.exe" chromedriver.exe
+          pip install pyinstaller selenium webdriver-manager
 
-      - name: Build with PyInstaller (onedir)
+      - name: Build with PyInstaller
         run: |
-          pyinstaller --onedir --windowed --name "抖音自动回复" --add-data "config.json;." --collect-all selenium --hidden-import selenium.webdriver.chrome.webdriver --hidden-import selenium.webdriver.common.by --hidden-import selenium.webdriver.support.ui --hidden-import selenium.webdriver.support.expected_conditions --hidden-import selenium.common.exceptions --hidden-import tkinter --hidden-import json --hidden-import threading --hidden-import time auto_reply_gui.py
+          pyinstaller --onedir --windowed --name "抖音自动回复" --add-data "config.json;." --collect-all selenium --hidden-import selenium.webdriver.chrome.webdriver --hidden-import webdriver_manager auto_reply_gui.py
 
-      - name: Copy files to dist folder
+      - name: Copy chromedriver
         run: |
-          copy chromedriver.exe dist\抖音自动回复\
-          copy config.json dist\抖音自动回复\
+          python -c "from webdriver_manager.chrome import ChromeDriverManager; import shutil; path = ChromeDriverManager().install(); shutil.copy(path, r'dist\抖音自动回复\chromedriver.exe')"
 
-      - name: Create ZIP package
+      - name: Create zip
         run: |
-          Compress-Archive -Path "dist\抖音自动回复\*" -DestinationPath "抖音自动回复_完整包.zip"
+          Compress-Archive -Path "dist\抖音自动回复\*" -DestinationPath "抖音自动回复_v4.zip"
 
-      - name: Upload package
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: 抖音自动回复_完整包
-          path: 抖音自动回复_完整包.zip
+          name: 抖音自动回复_v4
+          path: 抖音自动回复_v4.zip
