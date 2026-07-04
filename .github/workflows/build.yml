@@ -1,0 +1,32 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller selenium
+
+      - name: Build EXE
+        run: |
+          pyinstaller --onefile --windowed --name "抖音自动回复" --add-data "config.json;." auto_reply_gui.py
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: 抖音自动回复
+          path: dist/抖音自动回复.exe
