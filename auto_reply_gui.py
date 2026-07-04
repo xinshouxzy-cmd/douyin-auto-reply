@@ -24,10 +24,6 @@ PROFILES_DIR = os.path.join(BASE_DIR, "chrome_data")
 
 os.makedirs(PROFILES_DIR, exist_ok=True)
 
-CHROME_PATH = os.path.join(BASE_DIR, "chrome-win64", "chrome.exe")
-if not os.path.exists(CHROME_PATH):
-    CHROME_PATH = None
-
 DOUYIN_IM_URL = "https://www.douyin.com/messages"
 POLL_INTERVAL = 5
 
@@ -53,34 +49,56 @@ def save_config(config):
 
 # ========== Chrome 管理 ==========
 
+def find_chrome_path():
+    """自动查找 Chrome 安装位置"""
+    paths = []
+    if sys.platform == "win32":
+        paths = [
+            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+            "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+            os.path.expandvars("%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"),
+            os.path.expandvars("%PROGRAMFILES%\\Google\\Chrome\\Application\\chrome.exe"),
+            os.path.expandvars("%PROGRAMFILES(X86)%\\Google\\Chrome\\Application\\chrome.exe"),
+        ]
+    else:
+        paths = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/usr/bin/google-chrome",
+        ]
+    for p in paths:
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def auto_install_driver():
-    """自动下载 chromedriver"""
+    """自动安装匹配版本的 chromedriver"""
     try:
-        import urllib.request
-        import zipfile
-        import platform
+        from selenium.webdriver.chrome.service import Service as CDService
 
-        print("[系统] 正在检测 chromedriver...")
+        # 先尝试系统 PATH 中的 chromedriver
+        import shutil
+        local = shutil.which("chromedriver")
+        if local:
+            return local
 
-        # 先检查当前目录
+        # 尝试 webdriver-manager 自动安装
+        try:
+            from webdriver_manager.chrome import ChromeDriverManager
+            return ChromeDriverManager().install()
+        except ImportError:
+            pass
+
+        # 检查当前目录
         exe_name = "chromedriver.exe" if sys.platform == "win32" else "chromedriver"
         local_driver = os.path.join(BASE_DIR, exe_name)
         if os.path.exists(local_driver):
             return local_driver
 
-        # 检查 PATH
-        import shutil
-        if shutil.which("chromedriver"):
-            return "chromedriver"
-
-        print("[系统] 未找到 chromedriver，尝试自动下载...")
-        print("[系统] 如自动下载失败，请手动下载:")
-        print("       https://googlechromelabs.github.io/chrome-for-testing/")
-        print("       放到程序目录即可")
-        return None
     except Exception as e:
-        print(f"[系统] 驱动检测失败: {e}")
-        return None
+        print(f"驱动检测失败: {e}")
+
+    return None
 
 
 def create_driver(profile_name, log_func=print):
@@ -95,7 +113,14 @@ def create_driver(profile_name, log_func=print):
     profile_dir = os.path.join(PROFILES_DIR, profile_name)
     os.makedirs(profile_dir, exist_ok=True)
 
+    chrome_path = find_chrome_path()
+    if not chrome_path:
+        log_func("[错误] 未找到 Chrome 浏览器")
+        log_func("请安装 Chrome: https://www.google.com/chrome/")
+        return None
+
     options = Options()
+    options.binary_location = chrome_path
     options.add_argument(f"--user-data-dir={profile_dir}")
     options.add_argument("--no-default-browser-check")
     options.add_argument("--no-first-run")
@@ -106,16 +131,13 @@ def create_driver(profile_name, log_func=print):
     options.add_experimental_option("useAutomationExtension", False)
     options.add_experimental_option("detach", True)
 
-    if CHROME_PATH and os.path.exists(CHROME_PATH):
-        options.binary_location = CHROME_PATH
-
     driver_path = auto_install_driver()
     service = Service(executable_path=driver_path) if driver_path else Service()
 
     try:
         driver = webdriver.Chrome(service=service, options=options)
-    except Exception:
-        log_func("[错误] 启动 Chrome 失败，请确认已安装 Chrome 浏览器")
+    except Exception as e:
+        log_func(f"[错误] 启动 Chrome 失败: {str(e)[:100]}")
         return None
 
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")

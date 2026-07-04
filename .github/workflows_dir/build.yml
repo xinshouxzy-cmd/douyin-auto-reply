@@ -19,7 +19,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyinstaller selenium webdriver-manager
+          pip install pyinstaller selenium
 
       - name: Build EXE
         run: |
