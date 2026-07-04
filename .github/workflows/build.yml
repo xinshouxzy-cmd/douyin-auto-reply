@@ -23,10 +23,10 @@ jobs:
 
       - name: Build EXE
         run: |
-          pyinstaller --onefile --windowed --name "抖音自动回复" --add-data "config.json;." auto_reply_gui.py
+          pyinstaller --onefile --windowed --name "抖音自动回复_v3" --add-data "config.json;." --hidden-import tkinter --hidden-import selenium --hidden-import webdriver_manager auto_reply_gui.py
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
           name: 抖音自动回复
-          path: dist/抖音自动回复.exe
+          path: dist/抖音自动回复_v3.exe

@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-抖音多账号私信自动回复工具
+抖音多账号私信自动回复工具 v3
 ==========================
-打包命令: pyinstaller --onefile --windowed --name "抖音自动回复" auto_reply_gui.py
+独立 EXE，内置浏览器驱动管理
+每一号独立 Chrome 窗口，扫码登录后自动监控回复
 """
 
 import os
@@ -13,7 +14,6 @@ import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 
-# 工作目录
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
 else:
@@ -25,20 +25,18 @@ PROFILES_DIR = os.path.join(BASE_DIR, "chrome_data")
 os.makedirs(PROFILES_DIR, exist_ok=True)
 
 DOUYIN_IM_URL = "https://www.douyin.com/messages"
-POLL_INTERVAL = 5
+DOUYIN_LOGIN_URL = "https://www.douyin.com"
+POLL_INTERVAL = 8
 
 running_accounts = {}
 stop_flag = threading.Event()
 
-# ========== 配置管理 ==========
+# ====== 配置 ======
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
         return {"accounts": [
-            {"name": "账号1", "profile": "account_1", "reply_text": "您好！感谢关注遵义农商银行，您的消息已收到，稍后会有客户经理联系您~", "enabled": True},
-            {"name": "账号2", "profile": "account_2", "reply_text": "您好！感谢关注遵义农商银行，您的消息已收到，稍后会有客户经理联系您~", "enabled": True},
-            {"name": "账号3", "profile": "account_3", "reply_text": "您好！感谢关注遵义农商银行，您的消息已收到，稍后会有客户经理联系您~", "enabled": True},
-            {"name": "账号4", "profile": "account_4", "reply_text": "您好！感谢关注遵义农商银行，您的消息已收到，稍后会有客户经理联系您~", "enabled": True},
+            {"name": "账号1", "reply_text": "您好！感谢关注遵义农商银行，您的消息已收到~", "enabled": True},
         ]}
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -47,384 +45,361 @@ def save_config(config):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
-# ========== Chrome 管理 ==========
+# ====== Chrome ======
 
-def find_chrome_path():
-    """自动查找 Chrome 安装位置"""
-    paths = []
-    if sys.platform == "win32":
-        paths = [
-            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-            "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-            os.path.expandvars("%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"),
-            os.path.expandvars("%PROGRAMFILES%\\Google\\Chrome\\Application\\chrome.exe"),
-            os.path.expandvars("%PROGRAMFILES(X86)%\\Google\\Chrome\\Application\\chrome.exe"),
-        ]
-    else:
-        paths = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/usr/bin/google-chrome",
-        ]
-    for p in paths:
-        if os.path.exists(p):
-            return p
+def find_chrome():
+    for p in [
+        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+        os.path.expandvars("%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"),
+        os.path.expandvars("%PROGRAMFILES%\\Google\\Chrome\\Application\\chrome.exe"),
+        os.path.expandvars("%PROGRAMFILES(X86)%\\Google\\Chrome\\Application\\chrome.exe"),
+    ]:
+        if os.path.exists(p): return p
     return None
 
-
-def auto_install_driver():
-    """自动安装匹配版本的 chromedriver"""
+def get_driver_path():
     try:
-        from selenium.webdriver.chrome.service import Service as CDService
-
-        # 先尝试系统 PATH 中的 chromedriver
         import shutil
-        local = shutil.which("chromedriver")
-        if local:
-            return local
+        from selenium.webdriver.chrome.service import Service
+        d = shutil.which("chromedriver")
+        if d: return d
 
-        # 尝试 webdriver-manager 自动安装
         try:
             from webdriver_manager.chrome import ChromeDriverManager
             return ChromeDriverManager().install()
-        except ImportError:
-            pass
+        except: pass
 
-        # 检查当前目录
-        exe_name = "chromedriver.exe" if sys.platform == "win32" else "chromedriver"
-        local_driver = os.path.join(BASE_DIR, exe_name)
-        if os.path.exists(local_driver):
-            return local_driver
-
-    except Exception as e:
-        print(f"驱动检测失败: {e}")
-
+        exe = "chromedriver.exe" if sys.platform == "win32" else "chromedriver"
+        local = os.path.join(BASE_DIR, exe)
+        if os.path.exists(local): return local
+    except: pass
     return None
 
-
-def create_driver(profile_name, log_func=print):
+def new_chrome(profile_name, log_func):
+    """为指定账号创建 Chrome 窗口"""
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
         from selenium.webdriver.chrome.service import Service
     except ImportError:
-        log_func("[错误] 缺少 selenium，请确保已正确打包")
+        log_func("缺少 selenium")
         return None
 
-    profile_dir = os.path.join(PROFILES_DIR, profile_name)
-    os.makedirs(profile_dir, exist_ok=True)
-
-    chrome_path = find_chrome_path()
-    if not chrome_path:
-        log_func("[错误] 未找到 Chrome 浏览器")
-        log_func("请安装 Chrome: https://www.google.com/chrome/")
+    chrome = find_chrome()
+    if not chrome:
+        log_func("未找到 Chrome，请先安装: https://www.google.com/chrome/")
         return None
 
-    options = Options()
-    options.binary_location = chrome_path
-    options.add_argument(f"--user-data-dir={profile_dir}")
-    options.add_argument("--no-default-browser-check")
-    options.add_argument("--no-first-run")
-    options.add_argument("--disable-background-networking")
-    options.add_argument("--disable-sync")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
-    options.add_experimental_option("detach", True)
+    profile = os.path.join(PROFILES_DIR, profile_name)
+    os.makedirs(profile, exist_ok=True)
 
-    driver_path = auto_install_driver()
-    service = Service(executable_path=driver_path) if driver_path else Service()
+    opts = Options()
+    opts.binary_location = chrome
+    opts.add_argument(f"--user-data-dir={profile}")
+    opts.add_argument("--no-default-browser-check")
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--disable-background-networking")
+    opts.add_argument("--disable-sync")
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opts.add_experimental_option("useAutomationExtension", False)
+    opts.add_experimental_option("detach", True)
 
+    drv = get_driver_path()
+    svc = Service(executable_path=drv) if drv else Service()
     try:
-        driver = webdriver.Chrome(service=service, options=options)
+        d = webdriver.Chrome(service=svc, options=opts)
     except Exception as e:
-        log_func(f"[错误] 启动 Chrome 失败: {str(e)[:100]}")
-        return None
+        log_func(f"Chrome 启动失败: {str(e)[:80]}")
+        log_func("可能原因: Chrome 版本不匹配，正在尝试自动修复...")
+        try:
+            # 不带 driver_path 重试（让 Selenium 自动找）
+            svc2 = Service()
+            d = webdriver.Chrome(service=svc2, options=opts)
+        except:
+            return None
 
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    driver.set_window_size(450, 750)
-    return driver
+    d.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    d.set_window_size(450, 750)
+    return d
 
 
-# ========== 自动回复逻辑 ==========
+# ====== 工作线程 ======
 
-def auto_reply_worker(account, log_func):
-    name = account["name"]
-    profile = account["profile"]
-    reply_text = account.get("reply_text", "")
+def account_worker(acc, log_func, on_login_done):
+    name = acc["name"]
+    reply = acc.get("reply_text", "").strip()
+    profile = f"profile_{name}"
 
-    if not reply_text.strip():
-        log_func(f"[{name}] 未设置回复内容，跳过")
+    if not reply:
+        log_func(f"[{name}] 未设置回复内容")
+        on_login_done(name, "no_reply")
         return
 
-    log_func(f"[{name}] 启动中...")
-    driver = create_driver(profile, log_func)
+    log_func(f"[{name}] 打开 Chrome...")
+    driver = new_chrome(profile, log_func)
     if not driver:
-        log_func(f"[{name}] 启动失败")
+        on_login_done(name, "failed")
         return
 
     try:
+        # 先打开登录页
+        driver.get(DOUYIN_LOGIN_URL)
+        log_func(f"[{name}] Chrome 已打开，请扫码登录抖音")
+        log_func(f"[{name}] 登录后浏览器会自动跳转到消息页...")
+
+        # 等待用户登录（检测页面是否已登录状态）
+        logged_in = False
+        for _ in range(120):
+            time.sleep(2)
+            try:
+                current = driver.current_url
+                # 如果已跳转到 douyin.com 的任意页面（非登录页），说明已登录
+                if "douyin.com" in current and "login" not in current.lower() and "passport" not in current.lower():
+                    logged_in = True
+                    break
+                # 检测是否有用户信息元素
+                try:
+                    el = driver.find_element("css selector", "[data-e2e='user-info'], .user-info, img[alt*='avatar']")
+                    if el: logged_in = True; break
+                except: pass
+            except: pass
+
+        if not logged_in:
+            log_func(f"[{name}] 登录超时（2分钟），已跳过")
+            on_login_done(name, "timeout")
+            return
+
+        # 登录成功，跳转到消息页
         driver.get(DOUYIN_IM_URL)
-        log_func(f"[{name}] Chrome 已打开，请登录抖音")
-        log_func(f"[{name}] 登录后浏览器会保持在消息页面")
+        time.sleep(3)
+        on_login_done(name, "ok")
+        log_func(f"[{name}] ✅ 登录成功，开始监控私信")
 
-        replied_set = set()
-        error_count = 0
-
+        # 监控循环
         while not stop_flag.is_set():
             try:
-                if driver.current_url and "messages" not in driver.current_url and "im" not in driver.current_url:
-                    try:
-                        driver.get(DOUYIN_IM_URL)
-                    except:
-                        pass
+                if "messages" not in (driver.current_url or "") and "im" not in (driver.current_url or ""):
+                    driver.get(DOUYIN_IM_URL)
+                    time.sleep(3)
 
-                # 注入 JS 检测未读消息并回复
+                # 检测未读消息并回复
                 js = f"""
-                (function() {{
-                    let replied = [];
-                    let replyText = {json.dumps(reply_text, ensure_ascii=False)};
-                    try {{
-                        // 查找有未读标记的对话
-                        let items = document.querySelectorAll('[class*="conversation"], [class*="chat-item"], div[data-index]');
-                        for (let item of items) {{
-                            let badge = item.querySelector('[class*="unread"], [class*="badge"], [class*="count"], sup');
-                            if (badge && badge.textContent.trim()) {{
-                                let text = badge.textContent.trim();
-                                if (text !== '0' && text !== '') {{
-                                    let convId = item.getAttribute('data-id') || item.getAttribute('data-conversation-id');
-                                    let desc = (item.textContent || '').substring(0, 50).trim();
-                                    // 点击进入对话
-                                    item.click();
-                                    replied.push({{id: convId, desc: desc, unread: text}});
-                                }}
+                let results = [];
+                try {{
+                    let items = document.querySelectorAll('[class*="conversation"], [class*="session"], div[data-e2e]');
+                    for (let item of items) {{
+                        let badge = item.querySelector('[class*="unread"], sup, [class*="badge"], [class*="count"]');
+                        if (badge) {{
+                            let txt = badge.textContent.trim();
+                            if (txt && txt !== '0' && /\\d/.test(txt)) {{
+                                item.click();
+                                results.push({{clicked: true}});
                             }}
                         }}
-                    }} catch(e) {{}}
-                    return JSON.stringify(replied);
-                }})();
+                    }}
+                }} catch(e) {{}}
+                JSON.stringify(results);
                 """
                 unread = json.loads(driver.execute_script(js))
 
-                for conv in unread:
+                if unread:
                     time.sleep(2)
-                    # 发送回复
                     send_js = f"""
-                    (function() {{
-                        let reply = {json.dumps(reply_text, ensure_ascii=False)};
-                        let sent = false;
-                        try {{
-                            // 找输入框
-                            let input = document.querySelector('textarea, [contenteditable="true"]');
-                            if (!input) input = document.querySelector('div[data-placeholder], div[class*="rich-input"]');
-                            if (input) {{
-                                input.focus();
-                                if (input.contentEditable === 'true') {{
-                                    input.textContent = reply;
-                                }} else {{
-                                    input.value = reply;
-                                }}
-                                input.dispatchEvent(new Event('input', {{bubbles: true}}));
-                                
-                                setTimeout(function() {{
-                                    // 找发送按钮或按 Enter
-                                    let btn = document.querySelector('button[class*="send"], button[class*="Send"], div[class*="send"]');
-                                    if (btn) btn.click();
-                                    else input.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', code: 'Enter', bubbles: true}}));
-                                }}, 300);
-                                
-                                sent = true;
-                            }}
-                        }} catch(e) {{}}
-                        return JSON.stringify({{sent: sent, desc: '{conv.get("desc", "")}'[:30]}});
-                    }})();
+                    let done = false;
+                    try {{
+                        let input = document.querySelector('textarea, [contenteditable="true"], div[contenteditable]');
+                        if (!input) input = document.querySelector('[class*="input"], [class*="editor"]');
+                        if (input) {{
+                            if (input.tagName === 'TEXTAREA') input.value = {json.dumps(reply, ensure_ascii=False)};
+                            else input.textContent = {json.dumps(reply, ensure_ascii=False)};
+                            input.dispatchEvent(new Event('input', {{bubbles: true}}));
+                            setTimeout(function() {{
+                                let btn = document.querySelector('button[class*="send"], div[class*="send"], span[class*="send"]');
+                                if (btn) btn.click();
+                                else if (input.dispatchEvent) input.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', code: 'Enter', bubbles: true}}));
+                            }}, 500);
+                            done = true;
+                        }}
+                    }} catch(e) {{}}
+                    JSON.stringify({{done: done}});
                     """
                     result = json.loads(driver.execute_script(send_js))
-                    if result.get("sent"):
-                        log_func(f"[{name}] 已回复: {conv.get('desc', '')[:30]}...")
-                        replied_set.add(conv.get("id", str(time.time())))
+                    if result.get("done"):
+                        log_func(f"[{name}] 📤 已自动回复")
 
-                error_count = 0
                 time.sleep(POLL_INTERVAL)
 
             except Exception as e:
-                error_count += 1
-                if error_count > 10:
-                    log_func(f"[{name}] 连续错误，刷新页面...")
-                    try:
-                        driver.refresh()
-                    except:
-                        try:
-                            driver = create_driver(profile, log_func)
-                            if driver:
-                                driver.get(DOUYIN_IM_URL)
-                        except:
-                            log_func(f"[{name}] 无法恢复，请重启程序")
-                            break
-                    error_count = 0
-                time.sleep(5)
+                time.sleep(POLL_INTERVAL)
 
+    except Exception as e:
+        log_func(f"[{name}] 异常: {e}")
     finally:
-        try:
-            driver.quit()
-        except:
-            pass
+        try: driver.quit()
+        except: pass
         log_func(f"[{name}] 已停止")
 
 
-# ========== GUI ==========
+# ====== GUI ======
 
-class AutoReplyGUI:
+class App:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("抖音多账号自动回复 - 遵义农商银行")
-        self.root.geometry("700x550")
-        self.root.resizable(True, True)
+        self.root.geometry("580x620")
 
-        # 顶部标题
-        title_frame = tk.Frame(self.root, bg="#c41230")
-        title_frame.pack(fill=tk.X)
-        tk.Label(title_frame, text="抖音多账号私信自动回复", fg="white", bg="#c41230",
-                 font=("微软雅黑", 16, "bold"), pady=10).pack()
+        # Header
+        hf = tk.Frame(self.root, bg="#c41230", height=44)
+        hf.pack(fill=tk.X)
+        tk.Label(hf, text="抖音多账号私信自动回复", fg="white", bg="#c41230",
+                 font=("微软雅黑", 15, "bold")).pack(pady=8)
 
-        # 账号配置区域
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # 账号列表
+        self.list_frame = tk.Frame(self.root)
+        self.list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # 账号标签页
-        self.config = load_config()
-        self.account_frames = []
-        self.account_vars = []
-
-        for i, acc in enumerate(self.config["accounts"]):
-            self._add_account_tab(i, acc)
+        self.account_widgets = []
 
         # 底部按钮
-        btn_frame = tk.Frame(self.root)
-        btn_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        bf = tk.Frame(self.root)
+        bf.pack(fill=tk.X, padx=10, pady=(0, 6))
+        tk.Button(bf, text="+ 添加账号", command=self.add_account, width=11,
+                  font=("微软雅黑", 10)).pack(side=tk.LEFT, padx=4)
+        tk.Button(bf, text="💾 保存配置", command=self.save, bg="#4CAF50", fg="white",
+                  width=11, font=("微软雅黑", 10)).pack(side=tk.LEFT, padx=4)
+        tk.Button(bf, text="▶ 全部登录", command=self.start_all, bg="#c41230", fg="white",
+                  width=11, font=("微软雅黑", 10, "bold")).pack(side=tk.RIGHT, padx=4)
+        tk.Button(bf, text="⏹ 全部停止", command=self.stop_all, bg="#666", fg="white",
+                  width=11, font=("微软雅黑", 10)).pack(side=tk.RIGHT, padx=4)
 
-        tk.Button(btn_frame, text="+ 添加账号", command=self.add_account, width=12).pack(side=tk.LEFT, padx=4)
-        tk.Button(btn_frame, text="保存配置", command=self.save_all, bg="#4CAF50", fg="white", width=12).pack(side=tk.LEFT, padx=4)
-        tk.Button(btn_frame, text="▶ 全部启动", command=self.start_all, bg="#c41230", fg="white", width=12,
-                  font=("微软雅黑", 10, "bold")).pack(side=tk.RIGHT, padx=4)
-        tk.Button(btn_frame, text="⏹ 全部停止", command=self.stop_all, bg="#666", fg="white", width=12).pack(side=tk.RIGHT, padx=4)
-
-        # 日志区域
-        log_frame = tk.LabelFrame(self.root, text="运行日志", font=("微软雅黑", 9))
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=8, font=("Consolas", 9))
-        self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # 日志
+        lf = tk.LabelFrame(self.root, text="运行日志", font=("微软雅黑", 9))
+        lf.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        self.log_widget = scrolledtext.ScrolledText(lf, height=8, font=("Consolas", 9))
+        self.log_widget.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
         self.log("✅ 程序已启动")
-        self.log(f"📁 配置目录: {BASE_DIR}")
-        self.log(f"🔧 配置文件: {CONFIG_FILE}")
-        self.log(f"📂 Chrome数据: {PROFILES_DIR}")
+        self.log("【使用步骤】")
+        self.log("  1. 在每个账号中填写名称和自动回复内容")
+        self.log("  2. 点击「全部登录」打开 Chrome 窗口")
+        self.log("  3. 在 Chrome 中扫码登录抖音")
+        self.log("  4. 登录后程序自动监控私信并回复")
         self.log("")
-        self.log("【使用说明】")
-        self.log("1. 在每个账号标签页填写「自动回复内容」")
-        self.log("2. 勾选需要启用的账号")
-        self.log("3. 点击「全部启动」")
-        self.log("4. 首次使用需要在弹出的 Chrome 中登录抖音")
-        self.log("5. 登录后程序自动监控私信并回复")
+
+        self.config = load_config()
+        self.rebuild_list()
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-    def _add_account_tab(self, i, acc):
-        frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text=f"  {acc['name']}  ")
-        self.account_frames.append(frame)
+    def log(self, msg):
+        self.log_widget.insert(tk.END, f"{msg}\n")
+        self.log_widget.see(tk.END)
 
-        self.notebook.select(frame)
+    def rebuild_list(self):
+        for w in self.account_widgets:
+            w["frame"].destroy()
+        self.account_widgets.clear()
 
-        # 账号名称
-        tk.Label(frame, text="账号名称:", font=("微软雅黑", 9)).pack(anchor=tk.W, padx=20, pady=(16, 2))
-        name_var = tk.StringVar(value=acc.get("name", f"账号{i+1}"))
-        tk.Entry(frame, textvariable=name_var, width=40, font=("微软雅黑", 10)).pack(anchor=tk.W, padx=20)
+        for i, acc in enumerate(self.config.get("accounts", [])):
+            self._make_row(i, acc)
 
-        # 启用开关
-        enabled_var = tk.BooleanVar(value=acc.get("enabled", True))
-        tk.Checkbutton(frame, text="启用此账号", variable=enabled_var,
-                       font=("微软雅黑", 9)).pack(anchor=tk.W, padx=20, pady=(10, 2))
+    def _make_row(self, i, acc):
+        name = acc.get("name", f"账号{i+1}")
+        reply = acc.get("reply_text", "")
+        enabled = acc.get("enabled", True)
 
-        # 回复内容
-        tk.Label(frame, text="自动回复内容（收到任何私信都回复这段话）:",
-                 font=("微软雅黑", 9, "bold"), fg="#c41230").pack(anchor=tk.W, padx=20, pady=(10, 2))
-        reply_var = tk.StringVar(value=acc.get("reply_text", ""))
-        reply_entry = tk.Text(frame, height=5, width=60, font=("微软雅黑", 10))
-        reply_entry.insert("1.0", acc.get("reply_text", ""))
-        reply_entry.pack(anchor=tk.W, padx=20, fill=tk.X)
+        row = tk.Frame(self.list_frame, bd=1, relief=tk.GROOVE)
+        row.pack(fill=tk.X, padx=4, pady=3)
 
-        # 状态
-        status_var = tk.StringVar(value="⚪ 未启动")
-        tk.Label(frame, textvariable=status_var, font=("微软雅黑", 9),
-                 fg="gray").pack(anchor=tk.W, padx=20, pady=(10, 2))
+        # 第1行: 名称 + 状态 + 删除
+        r1 = tk.Frame(row)
+        r1.pack(fill=tk.X, padx=8, pady=(6, 2))
 
-        self.account_vars.append({
+        name_var = tk.StringVar(value=name)
+        tk.Entry(r1, textvariable=name_var, width=18, font=("微软雅黑", 10, "bold")).pack(side=tk.LEFT)
+
+        status_var = tk.StringVar(value="⚪ 未登��")
+        tk.Label(r1, textvariable=status_var, font=("微软雅黑", 9), fg="gray", width=14).pack(side=tk.LEFT, padx=8)
+
+        enabled_var = tk.BooleanVar(value=enabled)
+        tk.Checkbutton(r1, text="启用", variable=enabled_var).pack(side=tk.LEFT, padx=4)
+
+        tk.Button(r1, text="🗑", command=lambda idx=i: self.delete_account(idx),
+                  fg="red", font=("微软雅黑", 10), bd=0, width=3).pack(side=tk.RIGHT)
+
+        # 第2行: 回复内容
+        r2 = tk.Frame(row)
+        r2.pack(fill=tk.X, padx=8, pady=(2, 6))
+        tk.Label(r2, text="自动回复:", font=("微软雅黑", 9)).pack(side=tk.LEFT)
+        reply_var = tk.StringVar(value=reply)
+        tk.Entry(r2, textvariable=reply_var, width=40, font=("微软雅黑", 9)).pack(side=tk.LEFT, padx=6, fill=tk.X, expand=True)
+
+        self.account_widgets.append({
+            "frame": row,
             "name": name_var,
+            "reply": reply_var,
             "enabled": enabled_var,
-            "reply": reply_entry,
             "status": status_var,
-            "profile": acc.get("profile", f"account_{i+1}"),
         })
 
     def add_account(self):
         n = len(self.config["accounts"]) + 1
-        acc = {
-            "name": f"账号{n}",
-            "profile": f"account_{n}",
-            "reply_text": "",
-            "enabled": True
-        }
-        self.config["accounts"].append(acc)
-        self._add_account_tab(n - 1, acc)
+        self.config["accounts"].append({"name": f"账号{n}", "reply_text": "您好！感谢关注遵义农商银行，您的消息已收到~", "enabled": True})
+        self.rebuild_list()
         self.log(f"[系统] 已添加账号{n}")
 
-    def save_all(self):
-        for i, vars_dict in enumerate(self.account_vars):
-            self.config["accounts"][i]["name"] = vars_dict["name"].get()
-            self.config["accounts"][i]["enabled"] = vars_dict["enabled"].get()
-            self.config["accounts"][i]["reply_text"] = vars_dict["reply"].get("1.0", tk.END).strip()
+    def delete_account(self, i):
+        if messagebox.askyesno("确认", f"删除 {self.config['accounts'][i]['name']}？"):
+            del self.config["accounts"][i]
+            save_config(self.config)
+            self.rebuild_list()
+            self.log(f"[系统] 已删除账号")
+
+    def save(self):
+        for i, w in enumerate(self.account_widgets):
+            self.config["accounts"][i]["name"] = w["name"].get()
+            self.config["accounts"][i]["reply_text"] = w["reply"].get()
+            self.config["accounts"][i]["enabled"] = w["enabled"].get()
         save_config(self.config)
         self.log("[系统] 配置已保存")
 
     def start_all(self):
-        self.save_all()
+        self.save()
         stop_flag.clear()
 
-        enabled_count = 0
+        count = 0
         for i, acc in enumerate(self.config["accounts"]):
-            if acc["enabled"] and acc["reply_text"].strip():
-                enabled_count += 1
-                self.account_vars[i]["status"].set("🟢 运行中")
-                t = threading.Thread(target=auto_reply_worker,
-                                     args=(acc, lambda msg, a=acc["name"]: self.log_safe(f"[{a}] {msg}")),
-                                     daemon=True)
-                t.start()
-                running_accounts[acc["name"]] = t
-            elif acc["enabled"] and not acc["reply_text"].strip():
-                self.account_vars[i]["status"].set("🟡 未设置回复内容")
-            else:
-                self.account_vars[i]["status"].set("⚫ 已禁用")
+            if not acc["enabled"]: continue
+            w = self.account_widgets[i]
+            w["status"].set("🟡 等待登录...")
+            t = threading.Thread(target=account_worker,
+                                 args=(acc,
+                                       lambda msg: self.root.after(0, self.log, msg),
+                                       lambda n, s: self.set_status(i, s)),
+                                 daemon=True)
+            t.start()
+            running_accounts[acc["name"]] = t
+            count += 1
+            time.sleep(1)
 
-        if enabled_count == 0:
-            messagebox.showwarning("提示", "没有启用的账号或未设置回复内容")
+        if count == 0:
+            messagebox.showwarning("提示", "没有启用的账号")
         else:
-            self.log(f"[系统] 已启动 {enabled_count} 个账号监控")
+            self.log(f"[系统] 已打开 {count} 个 Chrome 窗口，请逐个扫码登录")
+
+    def set_status(self, i, s):
+        status_map = {"ok": "🟢 监控中", "timeout": "🔴 登录超时", "failed": "🔴 启动失败", "no_reply": "🟡 未设回复"}
+        self.account_widgets[i]["status"].set(status_map.get(s, f"🔴 {s}"))
 
     def stop_all(self):
         stop_flag.set()
-        for vars_dict in self.account_vars:
-            vars_dict["status"].set("⏹ 已停止")
-        running_accounts.clear()
+        for w in self.account_widgets:
+            s = w["status"].get()
+            if s in ("🟢 监控中", "🟡 等待登录..."):
+                w["status"].set("⏹ 已停止")
         self.log("[系统] 已停止所有账号")
-
-    def log(self, msg):
-        self.log_text.insert(tk.END, f"{msg}\n")
-        self.log_text.see(tk.END)
-        self.root.update_idletasks()
-
-    def log_safe(self, msg):
-        self.root.after(0, lambda: self.log(msg))
 
     def on_close(self):
         self.stop_all()
@@ -432,5 +407,4 @@ class AutoReplyGUI:
 
 
 if __name__ == "__main__":
-    gui = AutoReplyGUI()
-    gui.root.mainloop()
+    App().root.mainloop()
