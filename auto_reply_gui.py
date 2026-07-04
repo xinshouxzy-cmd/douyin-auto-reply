@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-抖音多账号私信自动回复 v5
+抖音多账号私信自动回复工具 v3
 ==========================
-Playwright 内置浏览器，解压即用，无需安装 Chrome
+独立 EXE，内置浏览器驱动管理
+每一号独立 Chrome 窗口，扫码登录后自动监控回复
 """
 
 import os
@@ -19,233 +20,382 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
-PROFILES_DIR = os.path.join(BASE_DIR, "browser_data")
+PROFILES_DIR = os.path.join(BASE_DIR, "chrome_data")
 
 os.makedirs(PROFILES_DIR, exist_ok=True)
 
-DOUYIN_IM = "https://www.douyin.com/messages"
-POLL = 8
-running = {}
-stopped = threading.Event()
+DOUYIN_IM_URL = "https://www.douyin.com/messages"
+DOUYIN_LOGIN_URL = "https://www.douyin.com"
+POLL_INTERVAL = 8
 
+running_accounts = {}
+stop_flag = threading.Event()
+
+# ====== 配置 ======
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
-        return {"accounts": [{"name": "账号1", "reply_text": "您好！感谢关注遵义农商银行，您的消息已收到~", "enabled": True}]}
+        return {"accounts": [
+            {"name": "账号1", "reply_text": "您好！感谢关注遵义农商银行，您的消息已收到~", "enabled": True},
+        ]}
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
-
 
 def save_config(config):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
+# ====== Chrome ======
 
-def browser(profile_name, log):
-    from playwright.sync_api import sync_playwright
-    p = sync_playwright().start()
-    ctx = p.chromium.launch_persistent_context(
-        user_data_dir=os.path.join(PROFILES_DIR, profile_name),
-        headless=False,
-        no_viewport=True,
-        args=["--disable-blink-features=AutomationControlled"]
-    )
-    ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    page = ctx.pages[0] if ctx.pages else ctx.new_page()
-    return p, ctx, page
+def find_chrome():
+    for p in [
+        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+        os.path.expandvars("%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"),
+        os.path.expandvars("%PROGRAMFILES%\\Google\\Chrome\\Application\\chrome.exe"),
+        os.path.expandvars("%PROGRAMFILES(X86)%\\Google\\Chrome\\Application\\chrome.exe"),
+    ]:
+        if os.path.exists(p): return p
+    return None
+
+def get_driver_path():
+    exe = "chromedriver.exe" if sys.platform == "win32" else "chromedriver"
+    local = os.path.join(BASE_DIR, exe)
+    if os.path.exists(local):
+        return local
+    try:
+        import shutil
+        d = shutil.which(exe)
+        if d: return d
+    except: pass
+    return None
+
+def new_chrome(profile_name, log_func):
+    """为指定账号创建 Chrome 窗口"""
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+    except ImportError:
+        log_func("缺少 selenium")
+        return None
+
+    chrome = find_chrome()
+    if not chrome:
+        log_func("未找到 Chrome，请先安装: https://www.google.com/chrome/")
+        return None
+
+    profile = os.path.join(PROFILES_DIR, profile_name)
+    os.makedirs(profile, exist_ok=True)
+
+    opts = Options()
+    opts.binary_location = chrome
+    opts.add_argument(f"--user-data-dir={profile}")
+    opts.add_argument("--no-default-browser-check")
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--disable-background-networking")
+    opts.add_argument("--disable-sync")
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opts.add_experimental_option("useAutomationExtension", False)
+    opts.add_experimental_option("detach", True)
+
+    drv = get_driver_path()
+    svc = Service(executable_path=drv) if drv else Service()
+    try:
+        d = webdriver.Chrome(service=svc, options=opts)
+    except Exception as e:
+        log_func(f"Chrome 启动失败: {str(e)[:80]}")
+        log_func("可能原因: Chrome 版本不匹配，正在尝试自动修复...")
+        try:
+            # 不带 driver_path 重试（让 Selenium 自动找）
+            svc2 = Service()
+            d = webdriver.Chrome(service=svc2, options=opts)
+        except:
+            return None
+
+    d.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    d.set_window_size(450, 750)
+    return d
 
 
-def worker(acc, log, done_cb):
+# ====== 工作线程 ======
+
+def account_worker(acc, log_func, on_login_done):
     name = acc["name"]
     reply = acc.get("reply_text", "").strip()
+    profile = f"profile_{name}"
+
     if not reply:
-        log(f"[{name}] 未设置回复内容")
-        done_cb(name, "no_reply")
+        log_func(f"[{name}] 未设置回复内容")
+        on_login_done(name, "no_reply")
         return
 
-    log(f"[{name}] 打开浏览器...")
-    try:
-        p, ctx, page = browser(f"profile_{name}", log)
-    except Exception as e:
-        log(f"[{name}] 浏览器启动失败: {e}")
-        done_cb(name, "failed")
+    log_func(f"[{name}] 打开 Chrome...")
+    driver = new_chrome(profile, log_func)
+    if not driver:
+        on_login_done(name, "failed")
         return
 
     try:
-        page.goto("https://www.douyin.com", wait_until="domcontentloaded")
-        log(f"[{name}] 已打开，请扫码登录抖音（2分钟内）")
+        # 先打开登录页
+        driver.get(DOUYIN_LOGIN_URL)
+        log_func(f"[{name}] Chrome 已打开，请扫码登录抖音")
+        log_func(f"[{name}] 登录后浏览器会自动跳转到消息页...")
 
-        logged = False
+        # 等待用户登录（检测页面是否已登录状态）
+        logged_in = False
         for _ in range(120):
-            time.sleep(1)
+            time.sleep(2)
             try:
-                url = page.url
-                if "douyin.com" in url and "login" not in url and "passport" not in url:
-                    logged = True
+                current = driver.current_url
+                # 如果已跳转到 douyin.com 的任意页面（非登录页），说明已登录
+                if "douyin.com" in current and "login" not in current.lower() and "passport" not in current.lower():
+                    logged_in = True
                     break
+                # 检测是否有用户信息元素
+                try:
+                    el = driver.find_element("css selector", "[data-e2e='user-info'], .user-info, img[alt*='avatar']")
+                    if el: logged_in = True; break
+                except: pass
             except: pass
 
-        if not logged:
-            log(f"[{name}] 登录超时")
-            done_cb(name, "timeout")
+        if not logged_in:
+            log_func(f"[{name}] 登录超时（2分钟），已跳过")
+            on_login_done(name, "timeout")
             return
 
-        page.goto(DOUYIN_IM, wait_until="domcontentloaded")
-        time.sleep(2)
-        done_cb(name, "ok")
-        log(f"[{name}] ✅ 登录成功，监控中")
+        # 登录成功，跳转到消息页
+        driver.get(DOUYIN_IM_URL)
+        time.sleep(3)
+        on_login_done(name, "ok")
+        log_func(f"[{name}] ✅ 登录成功，开始监控私信")
 
-        while not stopped.is_set():
+        # 监控循环
+        while not stop_flag.is_set():
             try:
-                if "messages" not in (page.url or ""):
-                    page.goto(DOUYIN_IM, wait_until="domcontentloaded")
-                    time.sleep(2)
-
-                # 检测未读消息
-                has_new = page.evaluate("""
-                    let items = document.querySelectorAll('[class*="conversation"], [class*="session"]');
-                    for (let item of items) {
-                        let b = item.querySelector('sup, [class*="badge"], [class*="unread"], [class*="count"]');
-                        if (b && b.textContent.trim() && /\\d/.test(b.textContent.trim())) return true;
-                    }
-                    return false;
-                """)
-
-                if has_new:
-                    page.evaluate("""
-                        let items = document.querySelectorAll('[class*="conversation"], [class*="session"]');
-                        for (let item of items) {
-                            let b = item.querySelector('sup, [class*="badge"], [class*="unread"], [class*="count"]');
-                            if (b && b.textContent.trim() && /\\d/.test(b.textContent.trim())) {
-                                item.click(); break;
-                            }
-                        }
-                    """)
+                if "messages" not in (driver.current_url or "") and "im" not in (driver.current_url or ""):
+                    driver.get(DOUYIN_IM_URL)
                     time.sleep(3)
-                    page.keyboard.type(reply)
-                    time.sleep(1)
-                    page.keyboard.press("Enter")
-                    log(f"[{name}] 📤 已自动回复")
 
-                time.sleep(POLL)
+                # 检测未读消息并回复
+                js = f"""
+                let results = [];
+                try {{
+                    let items = document.querySelectorAll('[class*="conversation"], [class*="session"], div[data-e2e]');
+                    for (let item of items) {{
+                        let badge = item.querySelector('[class*="unread"], sup, [class*="badge"], [class*="count"]');
+                        if (badge) {{
+                            let txt = badge.textContent.trim();
+                            if (txt && txt !== '0' && /\\d/.test(txt)) {{
+                                item.click();
+                                results.push({{clicked: true}});
+                            }}
+                        }}
+                    }}
+                }} catch(e) {{}}
+                JSON.stringify(results);
+                """
+                unread = json.loads(driver.execute_script(js))
+
+                if unread:
+                    time.sleep(2)
+                    send_js = f"""
+                    let done = false;
+                    try {{
+                        let input = document.querySelector('textarea, [contenteditable="true"], div[contenteditable]');
+                        if (!input) input = document.querySelector('[class*="input"], [class*="editor"]');
+                        if (input) {{
+                            if (input.tagName === 'TEXTAREA') input.value = {json.dumps(reply, ensure_ascii=False)};
+                            else input.textContent = {json.dumps(reply, ensure_ascii=False)};
+                            input.dispatchEvent(new Event('input', {{bubbles: true}}));
+                            setTimeout(function() {{
+                                let btn = document.querySelector('button[class*="send"], div[class*="send"], span[class*="send"]');
+                                if (btn) btn.click();
+                                else if (input.dispatchEvent) input.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', code: 'Enter', bubbles: true}}));
+                            }}, 500);
+                            done = true;
+                        }}
+                    }} catch(e) {{}}
+                    JSON.stringify({{done: done}});
+                    """
+                    result = json.loads(driver.execute_script(send_js))
+                    if result.get("done"):
+                        log_func(f"[{name}] 📤 已自动回复")
+
+                time.sleep(POLL_INTERVAL)
+
             except Exception as e:
-                time.sleep(POLL)
+                time.sleep(POLL_INTERVAL)
 
     except Exception as e:
-        log(f"[{name}] 异常: {e}")
+        log_func(f"[{name}] 异常: {e}")
     finally:
-        try:
-            ctx.close()
-            p.stop()
+        try: driver.quit()
         except: pass
-        log(f"[{name}] 已停止")
+        log_func(f"[{name}] 已停止")
 
+
+# ====== GUI ======
 
 class App:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("抖音多账号私信自动回复 - 遵义农商银行")
-        self.root.geometry("620x640")
-        tk.Frame(self.root, bg="#c41230", height=44).pack(fill=tk.X)
-        tk.Label(self.root, text="抖音多账号自动回复", fg="white", bg="#c41230", font=("微软雅黑", 15, "bold")).pack(pady=8)
+        self.root.title("抖音多账号自动回复 - 遵义农商银行")
+        self.root.geometry("580x620")
 
-        self.keys = tk.Frame(self.root)
-        self.keys.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        self.rows = []
+        # Header
+        hf = tk.Frame(self.root, bg="#c41230", height=44)
+        hf.pack(fill=tk.X)
+        tk.Label(hf, text="抖音多账号私信自动回复", fg="white", bg="#c41230",
+                 font=("微软雅黑", 15, "bold")).pack(pady=8)
 
+        # 账号列表
+        self.list_frame = tk.Frame(self.root)
+        self.list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.account_widgets = []
+
+        # 底部按钮
         bf = tk.Frame(self.root)
         bf.pack(fill=tk.X, padx=10, pady=(0, 6))
-        tk.Button(bf, text="+ 添加账号", command=self.add, width=11, font=("微软雅黑", 10)).pack(side=tk.LEFT, padx=4)
-        tk.Button(bf, text="💾 保存", command=self.save, bg="#4CAF50", fg="white", width=11, font=("微软雅黑", 10)).pack(side=tk.LEFT, padx=4)
-        tk.Button(bf, text="▶ 全部登录", command=self.start, bg="#c41230", fg="white", width=11, font=("微软雅黑", 10, "bold")).pack(side=tk.RIGHT, padx=4)
-        tk.Button(bf, text="⏹ 停 止", command=self.stop_all, bg="#666", fg="white", width=11, font=("微软雅黑", 10)).pack(side=tk.RIGHT, padx=4)
+        tk.Button(bf, text="+ 添加账号", command=self.add_account, width=11,
+                  font=("微软雅黑", 10)).pack(side=tk.LEFT, padx=4)
+        tk.Button(bf, text="💾 保存配置", command=self.save, bg="#4CAF50", fg="white",
+                  width=11, font=("微软雅黑", 10)).pack(side=tk.LEFT, padx=4)
+        tk.Button(bf, text="▶ 全部登录", command=self.start_all, bg="#c41230", fg="white",
+                  width=11, font=("微软雅黑", 10, "bold")).pack(side=tk.RIGHT, padx=4)
+        tk.Button(bf, text="⏹ 全部停止", command=self.stop_all, bg="#666", fg="white",
+                  width=11, font=("微软雅黑", 10)).pack(side=tk.RIGHT, padx=4)
 
-        lf = tk.LabelFrame(self.root, text="日志", font=("微软雅黑", 9))
+        # 日志
+        lf = tk.LabelFrame(self.root, text="运行日志", font=("微软雅黑", 9))
         lf.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        self.logbox = scrolledtext.ScrolledText(lf, height=8, font=("Consolas", 9))
-        self.logbox.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        self.log_widget = scrolledtext.ScrolledText(lf, height=8, font=("Consolas", 9))
+        self.log_widget.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
-        self.log("✅ 就绪 — 填写回复内容后点「全部登录」")
-        self.log("每个账号会打开独立窗口，扫码登录后自动回复")
+        self.log("✅ 程序已启动")
+        self.log("【使用步骤】")
+        self.log("  1. 在每个账号中填写名称和自动回复内容")
+        self.log("  2. 点击「全部登录」打开 Chrome 窗口")
+        self.log("  3. 在 Chrome 中扫码登录抖音")
+        self.log("  4. 登录后程序自动监控私信并回复")
+        self.log("")
 
-        self.cfg = load_config()
-        self.refresh()
-        self.root.protocol("WM_DELETE_WINDOW", self.quit)
+        self.config = load_config()
+        self.rebuild_list()
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def log(self, msg):
-        self.logbox.insert(tk.END, f"{msg}\n")
-        self.logbox.see(tk.END)
+        self.log_widget.insert(tk.END, f"{msg}\n")
+        self.log_widget.see(tk.END)
 
-    def refresh(self):
-        for r in self.rows: r["frame"].destroy()
-        self.rows.clear()
-        for i, a in enumerate(self.cfg.get("accounts", [])):
-            self._row(i, a)
+    def rebuild_list(self):
+        for w in self.account_widgets:
+            w["frame"].destroy()
+        self.account_widgets.clear()
 
-    def _row(self, i, a):
-        f = tk.Frame(self.keys, bd=1, relief=tk.GROOVE)
-        f.pack(fill=tk.X, padx=4, pady=2)
-        r1 = tk.Frame(f)
+        for i, acc in enumerate(self.config.get("accounts", [])):
+            self._make_row(i, acc)
+
+    def _make_row(self, i, acc):
+        name = acc.get("name", f"账号{i+1}")
+        reply = acc.get("reply_text", "")
+        enabled = acc.get("enabled", True)
+
+        row = tk.Frame(self.list_frame, bd=1, relief=tk.GROOVE)
+        row.pack(fill=tk.X, padx=4, pady=3)
+
+        # 第1行: 名称 + 状态 + 删除
+        r1 = tk.Frame(row)
         r1.pack(fill=tk.X, padx=8, pady=(6, 2))
-        nv = tk.StringVar(value=a.get("name", ""))
-        tk.Entry(r1, textvariable=nv, width=14, font=("微软雅黑", 10, "bold")).pack(side=tk.LEFT)
-        sv = tk.StringVar(value="⚪ 未启动")
-        tk.Label(r1, textvariable=sv, font=("微软雅黑", 9), fg="gray", width=14).pack(side=tk.LEFT, padx=6)
-        ev = tk.BooleanVar(value=a.get("enabled", True))
-        tk.Checkbutton(r1, text="启用", variable=ev).pack(side=tk.LEFT, padx=2)
-        tk.Button(r1, text="🗑", command=lambda ii=i: self.rm(ii), fg="red", bd=0, width=3).pack(side=tk.RIGHT)
-        r2 = tk.Frame(f)
+
+        name_var = tk.StringVar(value=name)
+        tk.Entry(r1, textvariable=name_var, width=18, font=("微软雅黑", 10, "bold")).pack(side=tk.LEFT)
+
+        status_var = tk.StringVar(value="⚪ 未登��")
+        tk.Label(r1, textvariable=status_var, font=("微软雅黑", 9), fg="gray", width=14).pack(side=tk.LEFT, padx=8)
+
+        enabled_var = tk.BooleanVar(value=enabled)
+        tk.Checkbutton(r1, text="启用", variable=enabled_var).pack(side=tk.LEFT, padx=4)
+
+        tk.Button(r1, text="🗑", command=lambda idx=i: self.delete_account(idx),
+                  fg="red", font=("微软雅黑", 10), bd=0, width=3).pack(side=tk.RIGHT)
+
+        # 第2行: 回复内容
+        r2 = tk.Frame(row)
         r2.pack(fill=tk.X, padx=8, pady=(2, 6))
-        tk.Label(r2, text="回复:", font=("微软雅黑", 9)).pack(side=tk.LEFT)
-        rv = tk.StringVar(value=a.get("reply_text", ""))
-        tk.Entry(r2, textvariable=rv, width=40, font=("微软雅黑", 9)).pack(side=tk.LEFT, padx=6, fill=tk.X, expand=True)
-        self.rows.append({"frame": f, "name": nv, "reply": rv, "enabled": ev, "status": sv})
+        tk.Label(r2, text="自动回复:", font=("微软雅黑", 9)).pack(side=tk.LEFT)
+        reply_var = tk.StringVar(value=reply)
+        tk.Entry(r2, textvariable=reply_var, width=40, font=("微软雅黑", 9)).pack(side=tk.LEFT, padx=6, fill=tk.X, expand=True)
 
-    def add(self):
-        self.cfg["accounts"].append({"name": f"账号{len(self.cfg['accounts'])+1}", "reply_text": "您好！感谢关注遵义农商银行，您的消息已收到~", "enabled": True})
-        self.refresh()
-        self.log("[系统] 已添加账号")
+        self.account_widgets.append({
+            "frame": row,
+            "name": name_var,
+            "reply": reply_var,
+            "enabled": enabled_var,
+            "status": status_var,
+        })
 
-    def rm(self, i):
-        if messagebox.askyesno("确认", f"删除 {self.cfg['accounts'][i]['name']}？"):
-            del self.cfg["accounts"][i]
-            save_config(self.cfg)
-            self.refresh()
-            self.log("[系统] 已删除")
+    def add_account(self):
+        n = len(self.config["accounts"]) + 1
+        self.config["accounts"].append({"name": f"账号{n}", "reply_text": "您好！感谢关注遵义农商银行，您的消息已收到~", "enabled": True})
+        self.rebuild_list()
+        self.log(f"[系统] 已添加账号{n}")
+
+    def delete_account(self, i):
+        if messagebox.askyesno("确认", f"删除 {self.config['accounts'][i]['name']}？"):
+            del self.config["accounts"][i]
+            save_config(self.config)
+            self.rebuild_list()
+            self.log(f"[系统] 已删除账号")
 
     def save(self):
-        for i, w in enumerate(self.rows):
-            self.cfg["accounts"][i].update(name=w["name"].get(), reply_text=w["reply"].get(), enabled=w["enabled"].get())
-        save_config(self.cfg)
-        self.log("💾 已保存")
+        for i, w in enumerate(self.account_widgets):
+            self.config["accounts"][i]["name"] = w["name"].get()
+            self.config["accounts"][i]["reply_text"] = w["reply"].get()
+            self.config["accounts"][i]["enabled"] = w["enabled"].get()
+        save_config(self.config)
+        self.log("[系统] 配置已保存")
 
-    def start(self):
+    def start_all(self):
         self.save()
-        stopped.clear()
-        cnt = 0
-        for i, a in enumerate(self.cfg["accounts"]):
-            if not a["enabled"]: continue
-            self.rows[i]["status"].set("🟡 等登录...")
-            t = threading.Thread(target=worker, args=(a, lambda m: self.root.after(0, self.log, m), lambda n, s: self.root.after(0, self._done, i, s)), daemon=True)
-            t.start()
-            running[a["name"]] = t
-            cnt += 1
-            time.sleep(1)
-        if cnt:
-            self.log(f"已打开 {cnt} 个窗口，请逐个扫码登录")
+        stop_flag.clear()
 
-    def _done(self, i, s):
-        m = {"ok": "🟢 监控中", "timeout": "🔴 超时", "failed": "🔴 失败", "no_reply": "🟡 无回复"}
-        self.rows[i]["status"].set(m.get(s, "🔴"))
+        count = 0
+        for i, acc in enumerate(self.config["accounts"]):
+            if not acc["enabled"]: continue
+            w = self.account_widgets[i]
+            w["status"].set("🟡 等待登录...")
+            t = threading.Thread(target=account_worker,
+                                 args=(acc,
+                                       lambda msg: self.root.after(0, self.log, msg),
+                                       lambda n, s: self.set_status(i, s)),
+                                 daemon=True)
+            t.start()
+            running_accounts[acc["name"]] = t
+            count += 1
+            time.sleep(1)
+
+        if count == 0:
+            messagebox.showwarning("提示", "没有启用的账号")
+        else:
+            self.log(f"[系统] 已打开 {count} 个 Chrome 窗口，请逐个扫码登录")
+
+    def set_status(self, i, s):
+        status_map = {"ok": "🟢 监控中", "timeout": "🔴 登录超时", "failed": "🔴 启动失败", "no_reply": "🟡 未设回复"}
+        self.account_widgets[i]["status"].set(status_map.get(s, f"🔴 {s}"))
 
     def stop_all(self):
-        stopped.set()
-        for w in self.rows:
-            if w["status"].get() in ("🟢 监控中", "🟡 等登录..."):
-                w["status"].set("⏹ 已停")
-        self.log("[系统] 已停止")
+        stop_flag.set()
+        for w in self.account_widgets:
+            s = w["status"].get()
+            if s in ("🟢 监控中", "🟡 等待登录..."):
+                w["status"].set("⏹ 已停止")
+        self.log("[系统] 已停止所有账号")
 
-    def quit(self):
+    def on_close(self):
         self.stop_all()
         self.root.destroy()
 
