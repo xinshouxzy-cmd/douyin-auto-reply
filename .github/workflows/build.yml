@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build Windows Package
 
 on:
   push:
@@ -19,14 +19,33 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyinstaller selenium webdriver-manager
+          pip install pyinstaller selenium
 
-      - name: Build EXE
+      - name: Download chromedriver
         run: |
-          pyinstaller --onefile --windowed --name "抖音自动回复_v3" --add-data "config.json;." --hidden-import tkinter --hidden-import selenium --hidden-import webdriver_manager auto_reply_gui.py
+          $chromeVersion = (Get-Item "C:\Program Files\Google\Chrome\Application\chrome.exe").VersionInfo.ProductVersion
+          Write-Host "Chrome version: $chromeVersion"
+          $majorVersion = $chromeVersion.Split('.')[0]
+          $url = "https://storage.googleapis.com/chrome-for-testing-public/$($majorVersion).0.0/win64/chromedriver-win64.zip"
+          Invoke-WebRequest -Uri $url -OutFile chromedriver.zip
+          Expand-Archive chromedriver.zip -DestinationPath .
+          move "chromedriver-win64\chromedriver.exe" chromedriver.exe
 
-      - name: Upload EXE
+      - name: Build with PyInstaller (onedir)
+        run: |
+          pyinstaller --onedir --windowed --name "抖音自动回复" --add-data "config.json;." --collect-all selenium --hidden-import selenium.webdriver.chrome.webdriver --hidden-import selenium.webdriver.common.by --hidden-import selenium.webdriver.support.ui --hidden-import selenium.webdriver.support.expected_conditions --hidden-import selenium.common.exceptions --hidden-import tkinter --hidden-import json --hidden-import threading --hidden-import time auto_reply_gui.py
+
+      - name: Copy files to dist folder
+        run: |
+          copy chromedriver.exe dist\抖音自动回复\
+          copy config.json dist\抖音自动回复\
+
+      - name: Create ZIP package
+        run: |
+          Compress-Archive -Path "dist\抖音自动回复\*" -DestinationPath "抖音自动回复_完整包.zip"
+
+      - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: 抖音自动回复
-          path: dist/抖音自动回复_v3.exe
+          name: 抖音自动回复_完整包
+          path: 抖音自动回复_完整包.zip

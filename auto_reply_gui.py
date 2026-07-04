@@ -59,20 +59,14 @@ def find_chrome():
     return None
 
 def get_driver_path():
+    exe = "chromedriver.exe" if sys.platform == "win32" else "chromedriver"
+    local = os.path.join(BASE_DIR, exe)
+    if os.path.exists(local):
+        return local
     try:
         import shutil
-        from selenium.webdriver.chrome.service import Service
-        d = shutil.which("chromedriver")
+        d = shutil.which(exe)
         if d: return d
-
-        try:
-            from webdriver_manager.chrome import ChromeDriverManager
-            return ChromeDriverManager().install()
-        except: pass
-
-        exe = "chromedriver.exe" if sys.platform == "win32" else "chromedriver"
-        local = os.path.join(BASE_DIR, exe)
-        if os.path.exists(local): return local
     except: pass
     return None
 
