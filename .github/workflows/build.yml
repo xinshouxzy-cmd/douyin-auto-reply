@@ -17,28 +17,25 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install Chrome
-        run: |
-          choco install googlechrome -y
-
-      - name: Install Python deps
+      - name: Install deps
         run: |
           pip install pyinstaller selenium webdriver-manager
 
-      - name: Build with PyInstaller
+      - name: Get chromedriver
         run: |
-          pyinstaller --onedir --windowed --name "抖音自动回复" --add-data "config.json;." --collect-all selenium --hidden-import selenium.webdriver.chrome.webdriver --hidden-import webdriver_manager auto_reply_gui.py
+          python -c "from webdriver_manager.chrome import ChromeDriverManager; p = ChromeDriverManager().install(); print('DRIVER at:', p); import shutil; shutil.copy(p, 'chromedriver.exe')"
 
-      - name: Copy chromedriver
+      - name: Build
         run: |
-          python -c "from webdriver_manager.chrome import ChromeDriverManager; import shutil; path = ChromeDriverManager().install(); shutil.copy(path, r'dist\抖音自动回复\chromedriver.exe')"
+          pyinstaller --onedir --windowed --name "抖音自动回复" --add-data "config.json;." --add-data "chromedriver.exe;." --collect-all selenium --hidden-import selenium.webdriver.chrome.webdriver --hidden-import webdriver_manager auto_reply_gui.py
 
-      - name: Create zip
+      - name: Package
+        shell: pwsh
         run: |
-          Compress-Archive -Path "dist\抖音自动回复\*" -DestinationPath "抖音自动回复_v4.zip"
+          Compress-Archive -Path "dist\抖音自动回复\*" -DestinationPath "抖音自动回复_v6.zip"
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: 抖音自动回复_v4
-          path: 抖音自动回复_v4.zip
+          name: 抖音自动回复_v6
+          path: 抖音自动回复_v6.zip
