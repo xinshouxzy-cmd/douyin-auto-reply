@@ -91,11 +91,6 @@ def worker(acc, log, done_cb, login_event):
             log(f"[{name}] 已取消")
             return
 
-        if not logged:
-            log(f"[{name}] 登录超时")
-            done_cb(name, "timeout")
-            return
-
         page.goto(DOUYIN_IM, wait_until="domcontentloaded", timeout=30000)
         time.sleep(3)
         done_cb(name, "ok")
