@@ -91,7 +91,12 @@ def worker(acc, log, done_cb, login_event):
             log(f"[{name}] 已取消")
             return
 
-        page.goto(DOUYIN_IM, wait_until="domcontentloaded", timeout=30000)
+        # 等页面稳定后导航到消息页（抖音会自动重定向）"
+        time.sleep(5)
+        try:
+            page.goto(DOUYIN_IM, timeout=30000)
+        except:
+            pass
         time.sleep(3)
         done_cb(name, "ok")
         log(f"[{name}] ✅ 登录成功，监控中")
@@ -99,8 +104,10 @@ def worker(acc, log, done_cb, login_event):
         while not stopped.is_set():
             try:
                 if "messages" not in (page.url or ""):
-                    page.goto(DOUYIN_IM, wait_until="domcontentloaded", timeout=15000)
-                    time.sleep(2)
+                    try:
+                        page.goto(DOUYIN_IM, timeout=15000)
+                    except:
+                        pass
 
                 has_new = page.evaluate("""() => {
                     for (let el of document.querySelectorAll('[class*="conversation"], [class*="session"]')) {
