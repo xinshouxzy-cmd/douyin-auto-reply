@@ -63,7 +63,7 @@ def open_browser(name, log):
     return p, ctx, page
 
 
-def worker(acc, log, done_cb):
+def worker(acc, log, done_cb, login_event):
     name = acc["name"]
     reply = acc.get("reply_text", "").strip()
     if not reply:
@@ -81,18 +81,15 @@ def worker(acc, log, done_cb):
 
     try:
         page.goto("https://www.douyin.com", wait_until="domcontentloaded", timeout=60000)
-        log(f"[{name}] 请扫码登录（2分钟超时）")
+        log(f"[{name}] 请在浏览器窗口扫码登录，登录成功后点「确认已登录」按钮")
 
-        logged = False
-        for _ in range(120):
-            time.sleep(1)
-            try:
-                u = page.url
-                if "douyin.com" in u and "login" not in u and "passport" not in u:
-                    logged = True
-                    break
-            except:
-                pass
+        # 等待用户手动确认登录
+        while not login_event.is_set() and not stopped.is_set():
+            time.sleep(0.5)
+        
+        if stopped.is_set():
+            log(f"[{name}] 已取消")
+            return
 
         if not logged:
             log(f"[{name}] 登录超时")
@@ -190,7 +187,7 @@ class App:
         for i, a in enumerate(self.cfg.get("accounts", [])):
             self._row(i, a)
 
-    def _row(self, i, a):
+    def     _row(self, i, a):
         f = tk.Frame(self.keys, bd=1, relief=tk.GROOVE)
         f.pack(fill=tk.X, padx=4, pady=2)
 
@@ -203,6 +200,8 @@ class App:
         ev = tk.BooleanVar(value=a.get("enabled", True))
         tk.Checkbutton(r1, text="启用", variable=ev).pack(side=tk.LEFT, padx=2)
         tk.Button(r1, text="🗑", command=lambda ii=i: self.rm(ii), fg="red", bd=0, width=3).pack(side=tk.RIGHT)
+        tk.Button(r1, text="确认已登录", command=lambda ii=i: self.confirm_login(ii),
+                  bg="#25f4ee", fg="#000", font=("微软雅黑", 8)).pack(side=tk.RIGHT, padx=4)
 
         r2 = tk.Frame(f)
         r2.pack(fill=tk.X, padx=8, pady=(2, 6))
@@ -210,7 +209,7 @@ class App:
         rv = tk.StringVar(value=a.get("reply_text", ""))
         tk.Entry(r2, textvariable=rv, width=40, font=("微软雅黑", 9)).pack(side=tk.LEFT, padx=6, fill=tk.X, expand=True)
 
-        self.rows.append({"frame": f, "name": nv, "reply": rv, "enabled": ev, "status": sv})
+        self.rows.append({"frame": f, "name": nv, "reply": rv, "enabled": ev, "status": sv, "login_event": threading.Event()})
 
     def add(self):
         n = len(self.cfg["accounts"]) + 1
@@ -237,17 +236,26 @@ class App:
         for i, a in enumerate(self.cfg["accounts"]):
             if not a["enabled"]:
                 continue
-            self.rows[i]["status"].set("🟡 等登录...")
+            self.rows[i]["status"].set("🟡 请扫码...")
+            self.rows[i]["login_event"].clear()
             t = threading.Thread(target=worker, args=(a,
                 lambda m: self.root.after(0, self.log, m),
-                lambda n, s: self.root.after(0, self._done, i, s)), daemon=True)
+                lambda n, s: self.root.after(0, self._done, i, s),
+                self.rows[i]["login_event"]), daemon=True)
             t.start()
             cnt += 1
             time.sleep(1.5)
         if cnt:
             self.log(f"已打开 {cnt} 个窗口，请逐个扫码登录")
 
+    def confirm_login(self, i):
+        self.rows[i]["login_event"].set()
+        self.rows[i]["status"].set("🟢 监控中")
+        self.log(f"[{self.cfg['accounts'][i]['name']}] 用户已确认登录")
+
     def _done(self, i, s):
+        m = {"ok": "🟢 监控中", "timeout": "🔴 超时", "failed": "🔴 失败", "no_reply": "🟡 无回复"}
+        self.rows[i]["status"].set(m.get(s, s))
         m = {"ok": "🟢 监控中", "timeout": "🔴 超时", "failed": "🔴 失败", "no_reply": "🟡 无回复"}
         self.rows[i]["status"].set(m.get(s, s))
 
