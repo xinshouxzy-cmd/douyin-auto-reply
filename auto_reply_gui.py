@@ -80,35 +80,24 @@ def worker(acc, log, done_cb, login_event):
         return
 
     try:
-        page.goto("https://www.douyin.com", wait_until="domcontentloaded", timeout=60000)
-        log(f"[{name}] 请在浏览器窗口扫码登录，登录成功后点「确认已登录」按钮")
+        page.goto("https://www.douyin.com", timeout=60000)
+        log(f"[{name}] 请扫码登录，然后手动点进「消息」页面，再点「确认已登录」")
 
-        # 等待用户手动确认登录
         while not login_event.is_set() and not stopped.is_set():
             time.sleep(0.5)
-        
+
         if stopped.is_set():
             log(f"[{name}] 已取消")
             return
 
-        # 等页面稳定后导航到消息页（抖音会自动重定向）"
-        time.sleep(5)
-        try:
-            page.goto(DOUYIN_IM, timeout=30000)
-        except:
-            pass
-        time.sleep(3)
+        # 不主动导航，用户已手动在消息页面
+        time.sleep(2)
         done_cb(name, "ok")
-        log(f"[{name}] ✅ 登录成功，监控中")
+        log(f"[{name}] ✅ 监控中，检测到新私信自动回复")
 
         while not stopped.is_set():
             try:
-                if "messages" not in (page.url or ""):
-                    try:
-                        page.goto(DOUYIN_IM, timeout=15000)
-                    except:
-                        pass
-
+                # 检测未读消息
                 has_new = page.evaluate("""() => {
                     for (let el of document.querySelectorAll('[class*="conversation"], [class*="session"]')) {
                         let b = el.querySelector('sup, [class*="badge"], [class*="unread"], [class*="count"]');
@@ -116,6 +105,22 @@ def worker(acc, log, done_cb, login_event):
                     }
                     return false;
                 }""")
+
+                if has_new:
+                    # 点击第一个未读对话
+                    page.evaluate("""() => {
+                        for (let el of document.querySelectorAll('[class*="conversation"], [class*="session"]')) {
+                            let b = el.querySelector('sup, [class*="badge"], [class*="unread"], [class*="count"]');
+                            if (b) { let t = b.textContent.trim(); if (t && /\\d/.test(t)) { el.click(); return; } }
+                        }
+                    }""")
+                    time.sleep(3)
+                    page.keyboard.type(reply)
+                    time.sleep(0.5)
+                    page.keyboard.press("Enter")
+                    log(f"[{name}] 📤 已自动回复")
+
+                time.sleep(POLL)
 
                 if has_new:
                     page.evaluate("""() => {
