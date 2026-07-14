@@ -23,7 +23,7 @@ PROFILES_DIR = os.path.join(BASE_DIR, "browser_data")
 
 os.makedirs(PROFILES_DIR, exist_ok=True)
 
-DOUYIN_IM = "https://www.douyin.com/messages"
+DOUYIN_IM = "https://www.douyin.com/chat?isPopup=1"
 POLL = 8
 stopped = threading.Event()
 
@@ -81,62 +81,98 @@ def worker(acc, log, done_cb, login_event):
 
     try:
         page.goto("https://www.douyin.com", timeout=60000)
-        log(f"[{name}] 请扫码登录，然后手动点进「消息」页面，再点「确认已登录」")
+        log(f"[{name}] 请扫码登录，完成后点「确认已登录」→ 自动跳转私信页面")
 
         while not login_event.is_set() and not stopped.is_set():
             time.sleep(0.5)
-
         if stopped.is_set():
-            log(f"[{name}] 已取消")
             return
 
-        # 不主动导航，用户已手动在消息页面
-        time.sleep(2)
+        # 确认登录后自动跳转到私信页面
+        page.goto("https://www.douyin.com/chat?isPopup=1", timeout=30000)
+        time.sleep(3)
         done_cb(name, "ok")
-        log(f"[{name}] ✅ 监控中，检测到新私信自动回复")
+        log(f"[{name}] ✅ 监控中 · 等待陌生人消息...")
+
+        in_stranger = False
+        replied_names = set()
 
         while not stopped.is_set():
             try:
-                # 检测未读消息
-                has_new = page.evaluate("""() => {
-                    for (let el of document.querySelectorAll('[class*="conversation"], [class*="session"]')) {
-                        let b = el.querySelector('sup, [class*="badge"], [class*="unread"], [class*="count"]');
-                        if (b) { let t = b.textContent.trim(); if (t && /\\d/.test(t)) return true; }
-                    }
-                    return false;
+                if not in_stranger:
+                    # 步骤1：在主消息列表检测「陌生人消息」
+                    stranger_entry = page.locator('text=陌生人消息').first
+                    if not stranger_entry.count():
+                        time.sleep(POLL)
+                        continue
+
+                    # 步骤2：点击进入
+                    stranger_entry.click()
+                    time.sleep(4)
+                    in_stranger = True
+                    replied_names = set()
+                    log(f"[{name}] 🚪 进入陌生人消息")
+
+                # 步骤3：在陌生人列表内，检测红点并回复
+                unread = page.evaluate("""() => {
+                    const results = [];
+                    const items = document.querySelectorAll('[class*="conversation"], [class*="session"]');
+                    items.forEach((el, i) => {
+                        const text = el.textContent || '';
+                        // 跳过面包屑「陌生人消息」
+                        if (text.includes('陌生人消息') || text.includes('陌生人')) return;
+                        
+                        const badge = el.querySelector('sup, [class*="badge"], [class*="unread"], [class*="count"]');
+                        if (badge) {
+                            const n = badge.textContent.trim();
+                            if (n && /\\d/.test(n)) {
+                                const name = text.replace(/\\d.*/, '').trim().substring(0, 30);
+                                results.push({index: i, name: name, count: parseInt(n) || 1});
+                            }
+                        }
+                    });
+                    return results;
                 }""")
 
-                if has_new:
-                    # 点击第一个未读对话
-                    page.evaluate("""() => {
-                        for (let el of document.querySelectorAll('[class*="conversation"], [class*="session"]')) {
-                            let b = el.querySelector('sup, [class*="badge"], [class*="unread"], [class*="count"]');
-                            if (b) { let t = b.textContent.trim(); if (t && /\\d/.test(t)) { el.click(); return; } }
-                        }
-                    }""")
-                    time.sleep(3)
-                    page.keyboard.type(reply)
-                    time.sleep(0.5)
-                    page.keyboard.press("Enter")
-                    log(f"[{name}] 📤 已自动回复")
+                if unread:
+                    for u in unread[:5]:  # 最多回5个，防止死循环
+                        if stopped.is_set():
+                            break
+                        name_key = u["name"][:20]
+                        if name_key in replied_names and u["count"] <= 1:
+                            continue
 
-                time.sleep(POLL)
+                        log(f"[{name}] 💬 陌生人: {u['name']}...")
+                        
+                        # 点击该对话
+                        page.evaluate(f"() => {{ document.querySelectorAll('[class*=\"conversation\"], [class*=\"session\"]')[{u['index']}].click(); }}")
+                        time.sleep(3)
 
-                if has_new:
-                    page.evaluate("""() => {
-                        for (let el of document.querySelectorAll('[class*="conversation"], [class*="session"]')) {
-                            let b = el.querySelector('sup, [class*="badge"], [class*="unread"], [class*="count"]');
-                            if (b) { let t = b.textContent.trim(); if (t && /\\d/.test(t)) { el.click(); return; } }
-                        }
-                    }""")
-                    time.sleep(3)
-                    page.keyboard.type(reply)
-                    time.sleep(0.5)
-                    page.keyboard.press("Enter")
-                    log(f"[{name}] 📤 已自动回复")
+                        # 点开对话后，先点击输入区域再输入
+                        time.sleep(1)
+                        page.evaluate("""() => {
+                            const el = document.querySelector('textarea, [contenteditable="true"], [class*="input"], [class*="chat-input"]');
+                            if (el) el.click();
+                        }""")
+                        time.sleep(0.5)
+                        page.keyboard.type(reply, delay=30)
+                        time.sleep(0.5)
+                        page.keyboard.press("Enter")
+                        
+                        replied_names.add(name_key)
+                        log(f"[{name}] 📤 已回复")
+
+                        # 返回陌生人列表（如果页面变了）
+                        page.evaluate("""() => {
+                            const back = document.querySelector('[class*="back"], [class*="Back"]');
+                            if (back) back.click();
+                        }""")
+                        time.sleep(2)
 
                 time.sleep(POLL)
             except Exception as e:
+                # 异常时重置状态，下次循环重新检测
+                in_stranger = False
                 time.sleep(POLL)
 
     except Exception as e:
@@ -153,11 +189,11 @@ def worker(acc, log, done_cb, login_event):
 class App:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("抖音多账号自动回复 - 遵义农商银行")
+        self.root.title("抖音多账号私信自动回复（仅陌生人） - 遵义农商银行")
         self.root.geometry("650x660")
 
         tk.Frame(self.root, bg="#c41230", height=44).pack(fill=tk.X)
-        tk.Label(self.root, text="抖音多账号私信自动回复", fg="white", bg="#c41230",
+        tk.Label(self.root, text="抖音多账号自动回复 · 仅陌生人", fg="white", bg="#c41230",
                  font=("微软雅黑", 15, "bold")).pack(pady=8)
 
         self.keys = tk.Frame(self.root)
