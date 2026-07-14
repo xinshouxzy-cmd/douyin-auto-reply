@@ -3,8 +3,8 @@
     {
       "name": "账号1",
       "profile": "account_1",
-      "reply_text": "您好！感谢关注遵义农商银行，您的消息已收到，稍后会有客户经理联系您~",
-      "enabled": true
+      "reply_text": "。。。",
+      "enabled": false
     },
     {
       "name": "账号2",
@@ -16,13 +16,13 @@
       "name": "账号3",
       "profile": "account_3",
       "reply_text": "您好！感谢关注遵义农商银行，您的消息已收到，稍后会有客户经理联系您~",
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "账号4",
       "profile": "account_4",
       "reply_text": "您好！感谢关注遵义农商银行，您的消息已收到，稍后会有客户经理联系您~",
-      "enabled": true
+      "enabled": false
     }
   ]
 }
